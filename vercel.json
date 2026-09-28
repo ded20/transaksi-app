@@ -1,21 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "npm ci",
-  "outputDirectory": ".",
+  "buildCommand": "npm install",
   "env": {
     "NODE_ENV": "production"
-  },
-  "functions": {
-    "api/index.js": {
-      "runtime": "nodejs20.x",
-      "memory": 512,
-      "maxDuration": 30
-    }
-  },
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.js"
-    }
-  ]
+  }
 }
