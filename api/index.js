@@ -1,32 +1,37 @@
 // api/index.js
-// Main Vercel serverless handler untuk semua API routes
+// Main Vercel serverless handler - PostgreSQL backend
 
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { initializeFirebase, getUser, getUserByUsername, createUser, getUserCategories, createCategory, updateCategory, deleteCategory, getUserTransactions, createTransaction, updateTransaction, deleteTransaction } from './firebase-db-esm.js';
+import {
+  initializeDatabase,
+  getUser,
+  getUserByUsername,
+  createUser,
+  getUserCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  getUserTransactions,
+  createTransaction,
+  updateTransaction,
+  deleteTransaction,
+} from './db-postgres.js';
 
 const app = express();
 
-// Initialize Firebase from environment variables
-let firebaseInitialized = false;
+// Initialize database on first request
+let dbInitialized = false;
 
-async function ensureFirebaseInitialized() {
-  if (firebaseInitialized) return;
-  
+async function ensureDatabaseInitialized() {
+  if (dbInitialized) return;
   try {
-    // Get service account from environment variable
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!serviceAccountJson) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable not set');
-    }
-    
-    const serviceAccount = JSON.parse(serviceAccountJson);
-    initializeFirebase(serviceAccount);
-    firebaseInitialized = true;
+    await initializeDatabase();
+    dbInitialized = true;
   } catch (error) {
-    console.error('❌ Firebase initialization failed:', error.message);
+    console.error('Database initialization failed:', error);
     throw error;
   }
 }
@@ -70,8 +75,7 @@ function generateId() {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    database: 'Firebase Realtime DB',
-    project: 'transaksi-app-58901',
+    database: 'Vercel Postgres',
     timestamp: new Date().toISOString(),
   });
 });
@@ -80,7 +84,7 @@ app.get('/health', (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { username, password } = req.body;
 
@@ -164,7 +168,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { username, password } = req.body;
 
@@ -186,7 +190,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const user = await getUser(req.userId);
     if (!user) {
@@ -207,7 +211,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.get('/api/categories', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const categories = await getUserCategories(req.userId);
     res.json(categories);
@@ -219,7 +223,7 @@ app.get('/api/categories', authMiddleware, async (req, res) => {
 
 app.post('/api/categories', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { name, color } = req.body;
     const id = generateId();
@@ -233,7 +237,7 @@ app.post('/api/categories', authMiddleware, async (req, res) => {
 
 app.put('/api/categories/:id', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { name, color } = req.body;
     const { id } = req.params;
@@ -247,7 +251,7 @@ app.put('/api/categories/:id', authMiddleware, async (req, res) => {
 
 app.delete('/api/categories/:id', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { id } = req.params;
     await deleteCategory(req.userId, id);
@@ -262,7 +266,7 @@ app.delete('/api/categories/:id', authMiddleware, async (req, res) => {
 
 app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { search, category_id, type, date_from, date_to, sort_by } = req.query;
     const filters = {
@@ -284,7 +288,7 @@ app.get('/api/transactions', authMiddleware, async (req, res) => {
 
 app.post('/api/transactions', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { date, description, category_id, type, amount } = req.body;
     const id = generateId();
@@ -306,7 +310,7 @@ app.post('/api/transactions', authMiddleware, async (req, res) => {
 
 app.put('/api/transactions/:id', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { date, description, category_id, type, amount } = req.body;
     const { id } = req.params;
@@ -328,7 +332,7 @@ app.put('/api/transactions/:id', authMiddleware, async (req, res) => {
 
 app.delete('/api/transactions/:id', authMiddleware, async (req, res) => {
   try {
-    await ensureFirebaseInitialized();
+    await ensureDatabaseInitialized();
     
     const { id } = req.params;
     await deleteTransaction(req.userId, id);
