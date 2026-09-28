@@ -17,11 +17,5 @@
       "src": "/(.*)",
       "dest": "/api/index.js"
     }
-  ],
-  "ignore": [
-    "backend",
-    "dist",
-    "src",
-    "node_modules"
   ]
 }
