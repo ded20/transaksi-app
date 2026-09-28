@@ -1,6 +1,7 @@
 {
   "version": 2,
   "buildCommand": "npm ci",
+  "outputDirectory": ".",
   "env": {
     "NODE_ENV": "production"
   },
