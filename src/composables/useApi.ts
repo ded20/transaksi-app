@@ -1,7 +1,8 @@
 import { ref, computed } from 'vue'
+import { API_BASE_URL } from '../config'
 import type { Transaction, TransactionInput, Category } from '../types'
 
-const API_BASE = 'http://localhost:8000/api'
+const API_BASE = `${API_BASE_URL}/api`
 
 export function useApi(userId: string | null) {
   const loading = ref(false)

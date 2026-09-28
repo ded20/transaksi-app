@@ -1,69 +1,27 @@
-import express from 'express';
-import cors from 'cors';
-import { createHash, randomBytes } from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, 'data');
-const dataFile = path.join(dataDir, 'data.json');
-
-// Create data directory
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-// Initialize data file
-if (!fs.existsSync(dataFile)) {
-  fs.writeFileSync(dataFile, JSON.stringify({ users: [], categories: [], transactions: [] }, null, 2));
-}
-
-function loadData() {
-  const raw = fs.readFileSync(dataFile, 'utf-8');
-  return JSON.parse(raw);
-}
-
-function saveData(data) {
-  fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-  // Auto-sync to SQLite in background
-  syncToSqlite();
-}
-
-function syncToSqlite() {
-  // Run migration asynchronously in background (non-blocking)
-  const child = spawn('node', ['migrate.js'], {
-    cwd: __dirname,
-    detached: true,
-    stdio: 'ignore'
-  });
-  child.unref(); // Don't wait for child process
-}
-
-// Password helpers
-function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  const hash = createHash('sha256').update(password + salt).digest('hex');
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password, hashWithSalt) {
-  const [salt, hash] = hashWithSalt.split(':');
-  const testHash = createHash('sha256').update(password + salt).digest('hex');
-  return hash === testHash;
-}
-
-function generateId() {
-  return uuidv4();
-}
+const express = require('express');
+const cors = require('cors');
+const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+const {
+  getUser,
+  getUserByUsername,
+  createUser,
+  getUserCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  getUserTransactions,
+  createTransaction,
+  updateTransaction,
+  deleteTransaction,
+} = require('./firebase-db');
 
 const app = express();
 const PORT = 8000;
 
+// Middleware
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'https://YOUR_USERNAME.github.io'],
   credentials: true,
 }));
 app.use(express.json());
@@ -78,12 +36,30 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// ==================== AUTH ====================
+// Password helpers
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.createHash('sha256').update(password + salt).digest('hex');
+  return `${salt}:${hash}`;
+}
 
-app.post('/api/auth/register', (req, res) => {
+function verifyPassword(password, hashWithSalt) {
+  const [salt, hash] = hashWithSalt.split(':');
+  const testHash = crypto.createHash('sha256').update(password + salt).digest('hex');
+  return hash === testHash;
+}
+
+function generateId() {
+  return uuidv4();
+}
+
+// ==================== AUTH ENDPOINTS ====================
+
+app.post('/api/auth/register', async (req, res) => {
   const { username, password } = req.body;
   
   try {
+    // Validate
     if (!username || username.trim().length < 3) {
       return res.status(400).json({ error: 'Username minimal 3 karakter' });
     }
@@ -91,8 +67,8 @@ app.post('/api/auth/register', (req, res) => {
       return res.status(400).json({ error: 'Password minimal 6 karakter' });
     }
 
-    const data = loadData();
-    const existing = data.users.find(u => u.username === username);
+    // Check if user exists
+    const existing = await getUserByUsername(username);
     if (existing) {
       return res.status(400).json({ error: 'Username sudah terdaftar' });
     }
@@ -100,12 +76,8 @@ app.post('/api/auth/register', (req, res) => {
     const userId = generateId();
     const passwordHash = hashPassword(password);
 
-    data.users.push({
-      id: userId,
-      username,
-      password_hash: passwordHash,
-      created_at: new Date().toISOString(),
-    });
+    // Create user
+    await createUser(userId, username, passwordHash);
 
     // Create default categories
     const defaultCategories = [
@@ -119,18 +91,11 @@ app.post('/api/auth/register', (req, res) => {
     ];
 
     for (const [name, color] of defaultCategories) {
-      data.categories.push({
-        id: generateId(),
-        user_id: userId,
-        name,
-        color,
-        is_default: true,
-        created_at: new Date().toISOString(),
-      });
+      await createCategory(userId, generateId(), name, color, true);
     }
 
     // Create dummy transactions
-    const userCategories = data.categories.filter(c => c.user_id === userId);
+    const userCategories = await getUserCategories(userId);
     const dummyTransactions = [
       { date: '2026-09-20', description: 'Gaji Bulanan', catIdx: 0, type: 'income', amount: 8000000 },
       { date: '2026-09-21', description: 'Belanja Kebutuhan Pokok', catIdx: 1, type: 'expense', amount: 1200000 },
@@ -157,28 +122,27 @@ app.post('/api/auth/register', (req, res) => {
     for (const dummy of dummyTransactions) {
       const catId = userCategories[Math.min(dummy.catIdx, userCategories.length - 1)]?.id;
       if (catId) {
-        data.transactions.push({
-          id: generateId(),
-          user_id: userId,
-          category_id: catId,
-          date: dummy.date,
-          description: dummy.description,
-          type: dummy.type,
-          amount: dummy.amount,
-          created_at: new Date().toISOString(),
-        });
+        await createTransaction(
+          userId,
+          generateId(),
+          catId,
+          dummy.date,
+          dummy.description,
+          dummy.type,
+          dummy.amount
+        );
       }
     }
 
-    saveData(data);
-    const user = data.users.find(u => u.id === userId);
-    res.json({ id: user.id, username: user.username, created_at: user.created_at });
+    const user = await getUser(userId);
+    res.json({ id: userId, username: user.username, created_at: user.created_at });
   } catch (error) {
+    console.error('Register error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   
   try {
@@ -186,27 +150,27 @@ app.post('/api/auth/login', (req, res) => {
       return res.status(400).json({ error: 'Username dan password harus diisi' });
     }
 
-    const data = loadData();
-    const user = data.users.find(u => u.username === username);
+    const user = await getUserByUsername(username);
     if (!user || !verifyPassword(password, user.password_hash)) {
       return res.status(401).json({ error: 'Username atau password salah' });
     }
 
     res.json({ id: user.id, username: user.username, created_at: user.created_at });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/auth/me', authMiddleware, (req, res) => {
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
-    const data = loadData();
-    const user = data.users.find(u => u.id === req.userId);
+    const user = await getUser(req.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    res.json({ id: user.id, username: user.username, created_at: user.created_at });
+    res.json({ id: req.userId, username: user.username, created_at: user.created_at });
   } catch (error) {
+    console.error('Get user error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -215,179 +179,154 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-// ==================== CATEGORIES ====================
+// ==================== CATEGORIES ENDPOINTS ====================
 
-app.get('/api/categories', authMiddleware, (req, res) => {
+app.get('/api/categories', authMiddleware, async (req, res) => {
   try {
-    const data = loadData();
-    const categories = data.categories.filter(c => c.user_id === req.userId);
+    const categories = await getUserCategories(req.userId);
     res.json(categories);
   } catch (error) {
+    console.error('Get categories error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/categories', authMiddleware, (req, res) => {
+app.post('/api/categories', authMiddleware, async (req, res) => {
   const { name, color } = req.body;
   
   try {
-    const data = loadData();
-    const category = {
-      id: generateId(),
-      user_id: req.userId,
-      name,
-      color,
-      is_default: false,
-      created_at: new Date().toISOString(),
-    };
-    data.categories.push(category);
-    saveData(data);
+    const id = generateId();
+    const category = await createCategory(req.userId, id, name, color, false);
     res.json(category);
   } catch (error) {
+    console.error('Create category error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.put('/api/categories/:id', authMiddleware, (req, res) => {
+app.put('/api/categories/:id', authMiddleware, async (req, res) => {
   const { name, color } = req.body;
   const { id } = req.params;
 
   try {
-    const data = loadData();
-    const category = data.categories.find(c => c.id === id && c.user_id === req.userId);
-    if (!category) {
-      return res.status(404).json({ error: 'Category not found' });
-    }
-    category.name = name;
-    category.color = color;
-    saveData(data);
+    const category = await updateCategory(req.userId, id, name, color);
     res.json(category);
   } catch (error) {
+    console.error('Update category error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/categories/:id', authMiddleware, (req, res) => {
+app.delete('/api/categories/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const data = loadData();
-    data.categories = data.categories.filter(c => !(c.id === id && c.user_id === req.userId));
-    data.transactions = data.transactions.filter(t => !(t.category_id === id && t.user_id === req.userId));
-    saveData(data);
+    await deleteCategory(req.userId, id);
     res.json({ message: 'Category deleted' });
   } catch (error) {
+    console.error('Delete category error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ==================== TRANSACTIONS ====================
+// ==================== TRANSACTIONS ENDPOINTS ====================
 
-app.get('/api/transactions', authMiddleware, (req, res) => {
+app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
-    const { search, category_id, type, date_from, date_to, sort_by = 'date-desc' } = req.query;
-    const data = loadData();
+    const { search, category_id, type, date_from, date_to, sort_by } = req.query;
 
-    let transactions = data.transactions.filter(t => t.user_id === req.userId);
+    const filters = {
+      search,
+      category_id,
+      type,
+      date_from,
+      date_to,
+      sort_by: sort_by || 'date-desc',
+    };
 
-    if (search) {
-      transactions = transactions.filter(t => t.description.toLowerCase().includes(search.toLowerCase()));
-    }
-    if (category_id) {
-      transactions = transactions.filter(t => t.category_id === category_id);
-    }
-    if (type) {
-      transactions = transactions.filter(t => t.type === type);
-    }
-    if (date_from) {
-      transactions = transactions.filter(t => t.date >= date_from);
-    }
-    if (date_to) {
-      transactions = transactions.filter(t => t.date <= date_to);
-    }
-
-    if (sort_by === 'date-asc') {
-      transactions.sort((a, b) => a.date.localeCompare(b.date));
-    } else if (sort_by === 'date-desc') {
-      transactions.sort((a, b) => b.date.localeCompare(a.date));
-    } else if (sort_by === 'amount-asc') {
-      transactions.sort((a, b) => a.amount - b.amount);
-    } else if (sort_by === 'amount-desc') {
-      transactions.sort((a, b) => b.amount - a.amount);
-    }
-
+    const transactions = await getUserTransactions(req.userId, filters);
     res.json(transactions);
   } catch (error) {
+    console.error('Get transactions error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/transactions', authMiddleware, (req, res) => {
+app.post('/api/transactions', authMiddleware, async (req, res) => {
   const { date, description, category_id, type, amount } = req.body;
 
   try {
-    const data = loadData();
-    const transaction = {
-      id: generateId(),
-      user_id: req.userId,
+    const id = generateId();
+    const transaction = await createTransaction(
+      req.userId,
+      id,
       category_id,
       date,
       description,
       type,
-      amount,
-      created_at: new Date().toISOString(),
-    };
-    data.transactions.push(transaction);
-    saveData(data);
+      amount
+    );
     res.json(transaction);
   } catch (error) {
+    console.error('Create transaction error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.put('/api/transactions/:id', authMiddleware, (req, res) => {
+app.put('/api/transactions/:id', authMiddleware, async (req, res) => {
   const { date, description, category_id, type, amount } = req.body;
   const { id } = req.params;
 
   try {
-    const data = loadData();
-    const transaction = data.transactions.find(t => t.id === id && t.user_id === req.userId);
-    if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    transaction.date = date;
-    transaction.description = description;
-    transaction.category_id = category_id;
-    transaction.type = type;
-    transaction.amount = amount;
-    saveData(data);
+    const transaction = await updateTransaction(
+      req.userId,
+      id,
+      category_id,
+      date,
+      description,
+      type,
+      amount
+    );
     res.json(transaction);
   } catch (error) {
+    console.error('Update transaction error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/transactions/:id', authMiddleware, (req, res) => {
+app.delete('/api/transactions/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const data = loadData();
-    data.transactions = data.transactions.filter(t => !(t.id === id && t.user_id === req.userId));
-    saveData(data);
+    await deleteTransaction(req.userId, id);
     res.json({ message: 'Transaction deleted' });
   } catch (error) {
+    console.error('Delete transaction error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ==================== HEALTH ====================
+// ==================== HEALTH CHECK ====================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', database: 'JSON File', path: dataFile });
+  res.json({ 
+    status: 'ok', 
+    database: 'Firebase Realtime DB',
+    project: 'transaksi-app-58901'
+  });
 });
+
+// ==================== ERROR HANDLING ====================
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ==================== START SERVER ====================
 
 app.listen(PORT, () => {
   console.log(`🚀 Backend running at http://localhost:${PORT}`);
   console.log(`📚 Health check: http://localhost:${PORT}/health`);
-  console.log(`💾 Database file: ${dataFile}`);
+  console.log(`🔥 Connected to Firebase: transaksi-app-58901`);
 });
