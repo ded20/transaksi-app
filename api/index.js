@@ -5,23 +5,31 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-
-// Import Firebase functions
-import {
-  getUser,
-  getUserByUsername,
-  createUser,
-  getUserCategories,
-  createCategory,
-  updateCategory,
-  deleteCategory,
-  getUserTransactions,
-  createTransaction,
-  updateTransaction,
-  deleteTransaction,
-} from '../backend/firebase-db.js';
+import { initializeFirebase, getUser, getUserByUsername, createUser, getUserCategories, createCategory, updateCategory, deleteCategory, getUserTransactions, createTransaction, updateTransaction, deleteTransaction } from './firebase-db-esm.js';
 
 const app = express();
+
+// Initialize Firebase from environment variables
+let firebaseInitialized = false;
+
+async function ensureFirebaseInitialized() {
+  if (firebaseInitialized) return;
+  
+  try {
+    // Get service account from environment variable
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!serviceAccountJson) {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable not set');
+    }
+    
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    initializeFirebase(serviceAccount);
+    firebaseInitialized = true;
+  } catch (error) {
+    console.error('❌ Firebase initialization failed:', error.message);
+    throw error;
+  }
+}
 
 // Middleware
 app.use(cors({
@@ -70,10 +78,12 @@ app.get('/health', (req, res) => {
 
 // ==================== AUTH ENDPOINTS ====================
 
-app.post('/auth/register', async (req, res) => {
-  const { username, password } = req.body;
-
+app.post('/api/auth/register', async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { username, password } = req.body;
+
     if (!username || username.trim().length < 3) {
       return res.status(400).json({ error: 'Username minimal 3 karakter' });
     }
@@ -152,10 +162,12 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-
+app.post('/api/auth/login', async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { username, password } = req.body;
+
     if (!username || !password) {
       return res.status(400).json({ error: 'Username dan password harus diisi' });
     }
@@ -172,8 +184,10 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
-app.get('/auth/me', authMiddleware, async (req, res) => {
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
     const user = await getUser(req.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -185,14 +199,16 @@ app.get('/auth/me', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/auth/logout', (req, res) => {
+app.post('/api/auth/logout', (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
 // ==================== CATEGORIES ENDPOINTS ====================
 
-app.get('/categories', authMiddleware, async (req, res) => {
+app.get('/api/categories', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
     const categories = await getUserCategories(req.userId);
     res.json(categories);
   } catch (error) {
@@ -201,10 +217,11 @@ app.get('/categories', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/categories', authMiddleware, async (req, res) => {
-  const { name, color } = req.body;
-
+app.post('/api/categories', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { name, color } = req.body;
     const id = generateId();
     const category = await createCategory(req.userId, id, name, color, false);
     res.json(category);
@@ -214,11 +231,12 @@ app.post('/categories', authMiddleware, async (req, res) => {
   }
 });
 
-app.put('/categories/:id', authMiddleware, async (req, res) => {
-  const { name, color } = req.body;
-  const { id } = req.params;
-
+app.put('/api/categories/:id', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { name, color } = req.body;
+    const { id } = req.params;
     const category = await updateCategory(req.userId, id, name, color);
     res.json(category);
   } catch (error) {
@@ -227,10 +245,11 @@ app.put('/categories/:id', authMiddleware, async (req, res) => {
   }
 });
 
-app.delete('/categories/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-
+app.delete('/api/categories/:id', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { id } = req.params;
     await deleteCategory(req.userId, id);
     res.json({ message: 'Category deleted' });
   } catch (error) {
@@ -241,10 +260,11 @@ app.delete('/categories/:id', authMiddleware, async (req, res) => {
 
 // ==================== TRANSACTIONS ENDPOINTS ====================
 
-app.get('/transactions', authMiddleware, async (req, res) => {
+app.get('/api/transactions', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
     const { search, category_id, type, date_from, date_to, sort_by } = req.query;
-
     const filters = {
       search,
       category_id,
@@ -262,10 +282,11 @@ app.get('/transactions', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/transactions', authMiddleware, async (req, res) => {
-  const { date, description, category_id, type, amount } = req.body;
-
+app.post('/api/transactions', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { date, description, category_id, type, amount } = req.body;
     const id = generateId();
     const transaction = await createTransaction(
       req.userId,
@@ -283,11 +304,12 @@ app.post('/transactions', authMiddleware, async (req, res) => {
   }
 });
 
-app.put('/transactions/:id', authMiddleware, async (req, res) => {
-  const { date, description, category_id, type, amount } = req.body;
-  const { id } = req.params;
-
+app.put('/api/transactions/:id', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { date, description, category_id, type, amount } = req.body;
+    const { id } = req.params;
     const transaction = await updateTransaction(
       req.userId,
       id,
@@ -304,10 +326,11 @@ app.put('/transactions/:id', authMiddleware, async (req, res) => {
   }
 });
 
-app.delete('/transactions/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-
+app.delete('/api/transactions/:id', authMiddleware, async (req, res) => {
   try {
+    await ensureFirebaseInitialized();
+    
+    const { id } = req.params;
     await deleteTransaction(req.userId, id);
     res.json({ message: 'Transaction deleted' });
   } catch (error) {
